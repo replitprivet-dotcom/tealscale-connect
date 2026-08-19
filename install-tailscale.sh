@@ -48,6 +48,42 @@ fi
 
 command -v tailscale >/dev/null 2>&1 || die "Tailscale installation did not provide the tailscale command."
 
+start_tailscaled() {
+  if pgrep -x tailscaled >/dev/null 2>&1; then
+    return 0
+  fi
+
+  log "Starting tailscaled."
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now tailscaled 2>/dev/null || true
+  fi
+
+  if ! pgrep -x tailscaled >/dev/null 2>&1 && command -v service >/dev/null 2>&1; then
+    service tailscaled start 2>/dev/null || true
+  fi
+
+  # Some VPS containers have no working systemd PID 1. Start the daemon
+  # directly as a fallback in that environment.
+  if ! pgrep -x tailscaled >/dev/null 2>&1; then
+    install -d -m 755 /var/lib/tailscale /var/run/tailscale
+    nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock \
+      >/var/log/tailscaled.log 2>&1 &
+  fi
+
+  for _ in $(seq 1 30); do
+    if pgrep -x tailscaled >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  log "tailscaled did not start. Recent daemon log:"
+  tail -20 /var/log/tailscaled.log 2>/dev/null || true
+  die "Could not start tailscaled."
+}
+
+start_tailscaled
+
 read_tty() {
   local prompt="$1"
   local value
