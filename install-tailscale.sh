@@ -24,6 +24,9 @@ TERMUX_PUBLIC_KEY="${TERMUX_PUBLIC_KEY:-ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJ7/
 SSH_USER="${SSH_USER:-}"
 TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-vps-$(hostname -s)}"
 TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY:-}"
+TAILSCALE_SOCKET="${TAILSCALE_SOCKET:-/var/run/tailscale/tailscaled.sock}"
+TAILSCALE_STATE="${TAILSCALE_STATE:-/var/lib/tailscale/tailscaled.state}"
+TAILSCALE_LOG="${TAILSCALE_LOG:-/var/log/tailscaled.log}"
 
 if [[ "${TERMUX_PUBLIC_KEY}" != ssh-ed25519\ * && "${TERMUX_PUBLIC_KEY}" != ssh-rsa\ * && "${TERMUX_PUBLIC_KEY}" != ecdsa-sha2-*\ * ]]; then
   die "TERMUX_PUBLIC_KEY does not look like an SSH public key."
@@ -32,7 +35,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 log "Installing required packages."
 apt-get update -y
-apt-get install -y ca-certificates curl openssh-server
+apt-get install -y ca-certificates curl openssh-server procps
 
 log "Enabling the SSH service."
 if command -v systemctl >/dev/null 2>&1; then
@@ -47,49 +50,86 @@ if ! command -v tailscale >/dev/null 2>&1; then
 fi
 
 command -v tailscale >/dev/null 2>&1 || die "Tailscale installation did not provide the tailscale command."
+command -v tailscaled >/dev/null 2>&1 || die "Tailscale installation did not provide the tailscaled daemon."
 
-start_tailscaled() {
-  if pgrep -x tailscaled >/dev/null 2>&1; then
-    return 0
-  fi
+# Always use one explicit socket path. This prevents tailscale CLI and
+# tailscaled from talking to different sockets on container-style VPS hosts.
+tailscale_cli() {
+  tailscale --socket="${TAILSCALE_SOCKET}" "$@"
+}
 
-  log "Starting tailscaled."
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl enable --now tailscaled 2>/dev/null || true
-  fi
+daemon_ready() {
+  [[ -S "${TAILSCALE_SOCKET}" ]] || return 1
+  local status_output
+  status_output="$(tailscale_cli status 2>&1 || true)"
+  [[ "${status_output}" != *"failed to connect"* \
+    && "${status_output}" != *"dial unix"* \
+    && "${status_output}" != *"connection refused"* \
+    && "${status_output}" != *"No such file"* ]]
+}
 
-  if ! pgrep -x tailscaled >/dev/null 2>&1 && command -v service >/dev/null 2>&1; then
-    service tailscaled start 2>/dev/null || true
-  fi
-
-  # Some VPS containers have no working systemd PID 1. Start the daemon
-  # directly as a fallback in that environment.
-  if ! pgrep -x tailscaled >/dev/null 2>&1; then
-    install -d -m 755 /var/lib/tailscale /var/run/tailscale
-    nohup tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/var/run/tailscale/tailscaled.sock \
-      >/var/log/tailscaled.log 2>&1 &
-  fi
-
-  for _ in $(seq 1 30); do
-    if pgrep -x tailscaled >/dev/null 2>&1; then
+wait_for_daemon() {
+  local attempt
+  for attempt in $(seq 1 45); do
+    if daemon_ready; then
       return 0
     fi
     sleep 1
   done
-
-  log "tailscaled did not start. Recent daemon log:"
-  tail -20 /var/log/tailscaled.log 2>/dev/null || true
-  die "Could not start tailscaled."
+  return 1
 }
 
-start_tailscaled
+start_direct_daemon() {
+  install -d -m 755 "$(dirname "${TAILSCALE_STATE}")" "$(dirname "${TAILSCALE_SOCKET}")"
+  nohup tailscaled \
+    --state="${TAILSCALE_STATE}" \
+    --socket="${TAILSCALE_SOCKET}" \
+    >"${TAILSCALE_LOG}" 2>&1 </dev/null &
+}
+
+start_tailscaled() {
+  if daemon_ready; then
+    return 0
+  fi
+
+  log "Starting tailscaled and waiting for its control socket."
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now tailscaled 2>/dev/null || true
+  fi
+  if wait_for_daemon; then
+    return 0
+  fi
+
+  if command -v service >/dev/null 2>&1; then
+    service tailscaled start 2>/dev/null || true
+  fi
+  if wait_for_daemon; then
+    return 0
+  fi
+
+  # Some VPS containers have no working systemd PID 1. Remove a stale daemon
+  # only after readiness checks fail, then start a controlled direct instance.
+  if pgrep -x tailscaled >/dev/null 2>&1; then
+    log "A tailscaled process exists but its socket is not ready; restarting it."
+    pkill -x tailscaled 2>/dev/null || true
+    sleep 2
+  fi
+  start_direct_daemon
+  if wait_for_daemon; then
+    return 0
+  fi
+
+  log "tailscaled did not become ready. Recent daemon log:"
+  tail -40 "${TAILSCALE_LOG}" 2>/dev/null || true
+  log "Process state:"
+  pgrep -af tailscaled 2>/dev/null || true
+  die "Could not start a usable tailscaled control socket at ${TAILSCALE_SOCKET}."
+}
 
 read_tty() {
   local prompt="$1"
   local value
-  if [[ ! -r /dev/tty ]]; then
-    die "Interactive setup needs a TTY. Set TAILSCALE_AUTH_KEY for non-interactive setup."
-  fi
+  [[ -r /dev/tty ]] || die "Interactive setup needs a TTY. Set TAILSCALE_AUTH_KEY for non-interactive setup."
   printf '%s' "${prompt}" >/dev/tty
   IFS= read -r value </dev/tty
   printf '\n' >/dev/tty
@@ -99,40 +139,62 @@ read_tty() {
 read_secret_tty() {
   local prompt="$1"
   local value
-  if [[ ! -r /dev/tty ]]; then
-    die "Interactive setup needs a TTY. Set TAILSCALE_AUTH_KEY for non-interactive setup."
-  fi
+  [[ -r /dev/tty ]] || die "Interactive setup needs a TTY. Set TAILSCALE_AUTH_KEY for non-interactive setup."
   printf '%s' "${prompt}" >/dev/tty
   IFS= read -r -s value </dev/tty
   printf '\n' >/dev/tty
   printf '%s' "${value}"
 }
 
-if tailscale ip -4 >/dev/null 2>&1; then
+start_tailscaled
+
+run_auth_key_login() {
+  local attempt
+  for attempt in 1 2 3; do
+    log "Joining Tailscale automatically as ${TAILSCALE_HOSTNAME} (attempt ${attempt}/3)."
+    if tailscale_cli up --auth-key="${TAILSCALE_AUTH_KEY}" --hostname="${TAILSCALE_HOSTNAME}" --ssh=false; then
+      unset TAILSCALE_AUTH_KEY
+      return 0
+    fi
+    log "Tailscale auth-key setup failed; checking the daemon and retrying."
+    start_tailscaled
+    sleep 2
+  done
+  unset TAILSCALE_AUTH_KEY
+  die "Tailscale auth-key setup failed after three attempts."
+}
+
+run_browser_login() {
+  local attempt
+  for attempt in 1 2 3; do
+    log "Starting interactive Tailscale login. Open the URL printed below in any browser."
+    if tailscale_cli up --hostname="${TAILSCALE_HOSTNAME}" --ssh=false; then
+      return 0
+    fi
+    log "The login command failed; checking the daemon and retrying."
+    start_tailscaled
+    sleep 2
+  done
+  die "Tailscale browser login could not start after three attempts."
+}
+
+if tailscale_cli ip -4 >/dev/null 2>&1; then
   log "Tailscale is already connected; keeping the existing node login."
-  tailscale set --hostname="${TAILSCALE_HOSTNAME}" 2>/dev/null || true
+  tailscale_cli set --hostname="${TAILSCALE_HOSTNAME}" 2>/dev/null || true
 else
   if [[ -z "${TAILSCALE_AUTH_KEY}" ]]; then
     printf '\nTailscale setup options:\n' >/dev/tty
     printf '  1) Paste a Tailscale auth key for automatic setup\n' >/dev/tty
     printf '  2) Use a Tailscale login URL\n\n' >/dev/tty
-    choice="$(read_tty 'Choose 1 or 2 [default: 2]: ' )"
+    choice="$(read_tty 'Choose 1 or 2 [default: 2]: ')"
     choice="${choice:-2}"
-
     case "${choice}" in
       1)
-        TAILSCALE_AUTH_KEY="$(read_secret_tty 'Paste Tailscale auth key (hidden): ' )"
+        TAILSCALE_AUTH_KEY="$(read_secret_tty 'Paste Tailscale auth key (hidden): ')"
         [[ -n "${TAILSCALE_AUTH_KEY}" ]] || die "No auth key was provided."
         ;;
       2)
-        log "Starting interactive Tailscale login. Open the URL printed below in any browser."
-        set +e
-        tailscale up --hostname="${TAILSCALE_HOSTNAME}" --ssh=false
-        tailscale_rc=$?
-        set -e
-        if [[ "${tailscale_rc}" -ne 0 ]]; then
-          log "Tailscale returned ${tailscale_rc}; waiting in case browser login is still completing."
-        fi
+        run_browser_login
         ;;
       *)
         die "Choose 1 or 2."
@@ -141,8 +203,7 @@ else
   fi
 
   if [[ -n "${TAILSCALE_AUTH_KEY}" ]]; then
-    log "Joining Tailscale automatically as ${TAILSCALE_HOSTNAME}."
-    tailscale up --auth-key="${TAILSCALE_AUTH_KEY}" --hostname="${TAILSCALE_HOSTNAME}" --ssh=false
+    run_auth_key_login
   fi
 fi
 
@@ -150,7 +211,7 @@ wait_for_tailscale_ip() {
   local ip=""
   local attempt
   for attempt in $(seq 1 60); do
-    ip="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+    ip="$(tailscale_cli ip -4 2>/dev/null | head -n 1 || true)"
     if [[ -n "${ip}" ]]; then
       printf '%s' "${ip}"
       return 0
@@ -161,7 +222,11 @@ wait_for_tailscale_ip() {
 }
 
 TAILSCALE_IP="$(wait_for_tailscale_ip || true)"
-[[ -n "${TAILSCALE_IP}" ]] || die "Tailscale is not connected yet. Complete the login URL and rerun the same command."
+if [[ -z "${TAILSCALE_IP}" ]]; then
+  log "Tailscale did not return an IPv4 address. Current status:"
+  tailscale_cli status 2>&1 || true
+  die "Complete the browser login, then rerun this same command."
+fi
 
 add_authorized_key() {
   local account="$1"

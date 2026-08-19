@@ -1,21 +1,25 @@
 # tealscale-connect
 
-A small, secure bootstrap for configuring a fresh Ubuntu or Debian VPS for **Tailscale-based SSH access**. The script installs Tailscale, joins the VPS to your tailnet with a short-lived or reusable Tailscale auth key, enables the SSH service, authorizes a supplied Termux public key, and prints the final `ssh root@<tailscale-ip>` command.
+A secure, idempotent bootstrap for configuring a fresh Ubuntu or Debian VPS for **Tailscale-based SSH access**. The installer installs Tailscale and OpenSSH, starts and verifies `tailscaled`, supports either an auth-key or browser-login flow, authorizes the Termux public key, and prints the final `ssh root@<tailscale-ip>` command.
 
-> **Important:** This public repository intentionally contains no GitHub token, Tailscale auth key, API key, private key, or VPS password. Provide secrets through environment variables at runtime.
+> **Important:** This public repository contains no GitHub token, Tailscale auth key, Tailscale API key, private key, or VPS password. Secrets are accepted only at runtime.
 
-## What it does
+## Automatic behavior
 
-The bootstrap performs the following deterministic steps:
+The installer is designed for the container-style VPS environment that caused the earlier `failed to connect to local tailscaled` error. It uses one explicit control socket for the CLI and daemon, then performs the following steps:
 
-1. Requires root privileges and installs or starts the SSH service.
-2. Installs Tailscale using the official installation method when it is not already present.
-3. If `TAILSCALE_AUTH_KEY` is supplied, joins the tailnet automatically.
-4. Otherwise, shows two choices: paste an auth key securely at a hidden prompt, or start an interactive Tailscale login flow that prints a browser URL.
-5. Adds the bundled Termux public key to the root account and, optionally, to `SSH_USER`.
-6. Waits for the Tailscale IPv4 address and prints the exact `ssh root@<tailscale-ip>` command.
+1. Installs the required packages and starts the SSH service.
+2. Installs Tailscale when it is missing.
+3. Starts `tailscaled` through systemd when available, then through the service manager, and finally as a direct background process when the VPS has no working systemd PID 1.
+4. Waits for the control socket to become usable before calling `tailscale up`.
+5. Supports two authentication modes. An auth key can be supplied non-interactively or pasted into a hidden prompt; alternatively, the script starts the browser-login flow and displays the URL from Tailscale.
+6. Retries authentication up to three times after daemon or socket failures.
+7. Waits for a Tailscale IPv4 address, adds the Termux public key idempotently, reloads SSH, and prints the exact SSH commands.
+8. On failure, prints the current Tailscale status, daemon process state, and recent daemon log lines without printing the auth key.
 
-The script does **not** generate a Tailscale API key. For automatic mode, create a Tailscale **auth key** in the Tailscale admin console and paste it into the hidden prompt, or provide it through `TAILSCALE_AUTH_KEY`. For the login-URL mode, no auth key is needed: complete the browser login and let the script continue. An auth key registers a node; an API key is for administrative API operations and should not be embedded in a VPS bootstrap script.
+Rerunning the installer is safe. Existing Tailscale connections are kept, duplicate authorized-key lines are not added, and the hostname is updated without recreating the node unnecessarily.
+
+The script does **not** generate a Tailscale API key. For automatic node registration, use a Tailscale **auth key**. For the browser flow, no auth key is needed; complete the URL login and let the script continue. An auth key registers a node, while an API key is intended for administrative API operations.
 
 ## Fresh VPS usage
 
@@ -26,45 +30,74 @@ apt-get update -y && apt-get install -y curl ca-certificates
 curl -fsSL https://raw.githubusercontent.com/replitprivet-dotcom/tealscale-connect/main/install-tailscale.sh | bash
 ```
 
-After the second command starts, the installer offers two Tailscale options. Choose **1** to paste an auth key into a hidden prompt for automatic setup, or choose **2** to receive a Tailscale login URL and authenticate in a browser. After login completes, the script automatically prints the Tailscale IPv4 address and the final SSH command.
+After the second command starts, choose one of the displayed options:
 
-The bundled public key is the current Termux key. To use a different key, set `TERMUX_PUBLIC_KEY` before launching the script. To use automatic mode without a prompt, set `TAILSCALE_AUTH_KEY` before the second command.
+| Choice | Result |
+|---|---|
+| `1` | Paste a Tailscale auth key into a hidden prompt. Registration is automatic. |
+| `2` | Tailscale prints a browser login URL. Complete login, then the script continues automatically. |
 
-After completion, the script prints the Tailscale IPv4 address. Connect from Termux with either command:
+When provisioning finishes, the output includes:
 
 ```bash
 ssh root@<tailscale-ip>
 ```
 
-or, explicitly selecting the default Ed25519 key:
+It also prints an explicit-key alternative:
 
 ```bash
 ssh -i ~/.ssh/id_ed25519 root@<tailscale-ip>
 ```
 
-The plain command works when the private key is stored at Termux's default path `~/.ssh/id_ed25519` and the public key was authorized by the script.
+The plain command works when the private key is stored at Termux's default path `~/.ssh/id_ed25519`. The script authorizes the bundled public key, which is the current Termux key used for this setup.
 
-## Optional non-root account
+## Fully non-interactive mode
 
-To authorize the same public key for a non-root account as well, set `SSH_USER` before running the installer:
+For automation, pass the auth key through the environment. Do not put a real key into the repository, a public URL, or shell history if it can be avoided:
 
 ```bash
-export SSH_USER='ubuntu'
+export TAILSCALE_AUTH_KEY='tskey-auth-REPLACE_ME'
+export TAILSCALE_HOSTNAME='my-new-vps'
 curl -fsSL https://raw.githubusercontent.com/replitprivet-dotcom/tealscale-connect/main/install-tailscale.sh | bash
 ```
 
-The script still configures root access because the intended provisioning flow uses `ssh root@<tailscale-ip>`.
+You can replace the bundled public key at runtime:
+
+```bash
+export TERMUX_PUBLIC_KEY='ssh-ed25519 REPLACE_WITH_YOUR_TERMUX_PUBLIC_KEY'
+```
+
+For an additional non-root account, set `SSH_USER` before running the script:
+
+```bash
+export SSH_USER='ubuntu'
+```
+
+Root access is still configured because the intended command is `ssh root@<tailscale-ip>`.
+
+## If a run is interrupted
+
+Press `Ctrl+C` and rerun the same two commands. The script is designed to recover a stale or missing daemon socket automatically. If the VPS has a severe daemon or kernel limitation, the final diagnostics show:
+
+```bash
+pgrep -af tailscaled
+cat /var/log/tailscaled.log
+```
+
+The script itself prints recent log lines when it cannot establish the control socket or obtain a Tailscale IPv4 address.
 
 ## Secret-handling rules
 
-Keep `TAILSCALE_AUTH_KEY` out of shell history where practical, never commit it, and revoke or rotate it after provisioning if it is single-use or no longer needed. Keep the Termux private key only on the phone; only the public key belongs in the VPS `authorized_keys` file. If a GitHub Actions workflow is added later, store the auth key and private deployment key as encrypted repository or environment secrets rather than plain YAML values.
+Keep `TAILSCALE_AUTH_KEY` out of shell history where practical, never commit it, and revoke or rotate it after provisioning if it is single-use or no longer needed. Keep the Termux private key only on the phone; only the public key belongs in `authorized_keys`. Do not place a GitHub token, Tailscale API key, auth key, private SSH key, or VPS password in this public repository.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `install-tailscale.sh` | Idempotent VPS bootstrap script. |
-| `.gitignore` | Prevents local secret files and runtime artifacts from being committed. |
+| `install-tailscale.sh` | Idempotent VPS bootstrap with daemon recovery, authentication retries, diagnostics, and SSH output. |
+| `diagnose-tailscale.sh` | Read-only daemon, socket, Tailscale, SSH, and log diagnostics. |
+| `.env.example` | Safe placeholder template for local runtime variables. |
+| `.gitignore` | Prevents local secret files, private keys, and runtime logs from being committed. |
 
 ## License
 
