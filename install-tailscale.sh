@@ -265,7 +265,7 @@ install_login_banner() {
   local banner_file="/etc/profile.d/tealscale-connect.sh"
   local marker_begin='# >>> tealscale-connect login banner >>>'
   local marker_end='# <<< tealscale-connect login banner <<<'
-  local root_home user_home rc_file prompt_id_file prompt_id
+  local root_home user_home rc_file prompt_id_file prompt_id=""
 
   prompt_id_file="/etc/tealscale-connect-id"
   if [[ -s "${prompt_id_file}" ]]; then
