@@ -265,7 +265,18 @@ install_login_banner() {
   local banner_file="/etc/profile.d/tealscale-connect.sh"
   local marker_begin='# >>> tealscale-connect login banner >>>'
   local marker_end='# <<< tealscale-connect login banner <<<'
-  local root_home user_home rc_file
+  local root_home user_home rc_file prompt_id_file prompt_id
+
+  prompt_id_file="/etc/tealscale-connect-id"
+  if [[ -s "${prompt_id_file}" ]]; then
+    prompt_id="$(tr -dc 'a-f0-9' < "${prompt_id_file}")"
+    prompt_id="${prompt_id:0:6}"
+  fi
+  if [[ "${#prompt_id}" -ne 6 ]]; then
+    prompt_id="$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
+    printf '%s\n' "${prompt_id}" > "${prompt_id_file}"
+    chmod 644 "${prompt_id_file}"
+  fi
 
   cat > "${banner_file}" <<BANNER
 #!/usr/bin/env bash
@@ -277,7 +288,16 @@ TEALSCALE_CONNECT_BANNER_SHOWN=1
 TS_SOCKET='${TAILSCALE_SOCKET}'
 TS_PORT='${TAILSCALE_SSH_PORT}'
 TS_USERSPACE='${TAILSCALE_USERSPACE}'
+TS_PROMPT_ID='${prompt_id}'
 TS_IP="\$(tailscale --socket="\${TS_SOCKET}" ip -4 2>/dev/null | head -n 1 || true)"
+TS_PROMPT_IP="\${TS_IP:-${TAILSCALE_IP}}"
+TS_PROMPT_IP="\${TS_PROMPT_IP//./-}"
+TS_PROMPT_HOST="ip-\${TS_PROMPT_IP}-\${TS_PROMPT_ID}"
+if [[ "\${EUID}" -eq 0 ]]; then
+  PS1='\u@'"\${TS_PROMPT_HOST}"':\w# '
+else
+  PS1='\u@'"\${TS_PROMPT_HOST}"':\w$ '
+fi
 printf '\n[tealscale-connect] Login working.\n'
 if [[ -n "\${TS_IP}" ]]; then
   printf '[tealscale-connect] Tailscale IP: %s\n' "\${TS_IP}"

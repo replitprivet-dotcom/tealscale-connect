@@ -62,7 +62,13 @@ On every interactive SSH or `su` shell, the installer shows a small status banne
 [tealscale-connect] SSH: ssh -p 2222 root@100.x.x.x
 ```
 
-It then runs `fastfetch`, `neofetch`, or a built-in lightweight system summary. The banner is marker-protected, so rerunning the installer does not add duplicate shell hooks.
+It then runs `fastfetch`, `neofetch`, or a built-in lightweight system summary. The shell prompt is also changed automatically to include the Tailscale IP and a persistent six-character ID. For example:
+
+```text
+root@ip-100-124-33-109-a1b2c3:~#
+```
+
+The same prompt and banner are applied to root and configured `su`/login shells. The banner is marker-protected, so rerunning the installer does not add duplicate shell hooks.
 
 ## Fully non-interactive mode
 
