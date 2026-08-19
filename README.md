@@ -16,7 +16,9 @@ The installer is designed for the container-style VPS environment that caused th
 6. Supports two authentication modes. An auth key can be supplied non-interactively or pasted into a hidden prompt; alternatively, the script starts the browser-login flow and displays the URL from Tailscale.
 7. Retries authentication up to three times after daemon or socket failures.
 8. Waits for a Tailscale IPv4 address, adds the Termux public key idempotently, reloads SSH, and prints the exact SSH commands.
-9. On failure, prints the current Tailscale status, daemon process state, and recent daemon log lines without printing the auth key.
+9. Installs `fastfetch` when available, with `neofetch` and a lightweight system-summary fallback.
+10. Installs an idempotent `/etc/profile.d/tealscale-connect.sh` banner so interactive root and `su` login shells show a working message, Tailscale IP, SSH command, and system summary.
+11. On failure, prints the current Tailscale status, daemon process state, and recent daemon log lines without printing the auth key.
 
 Rerunning the installer is safe. Existing Tailscale connections are kept, duplicate authorized-key lines are not added, and the hostname is updated without recreating the node unnecessarily.
 
@@ -51,6 +53,16 @@ ssh -p 2222 root@<tailscale-ip>
 ```
 
 It also prints an explicit-key alternative for each mode. The plain command works when the private key is stored at Termux's default path `~/.ssh/id_ed25519`. The script authorizes the bundled public key, which is the current Termux key used for this setup.
+
+On every interactive SSH or `su` shell, the installer shows a small status banner such as:
+
+```text
+[tealscale-connect] Login working.
+[tealscale-connect] Tailscale IP: 100.x.x.x
+[tealscale-connect] SSH: ssh -p 2222 root@100.x.x.x
+```
+
+It then runs `fastfetch`, `neofetch`, or a built-in lightweight system summary. The banner is marker-protected, so rerunning the installer does not add duplicate shell hooks.
 
 ## Fully non-interactive mode
 
@@ -95,7 +107,7 @@ Keep `TAILSCALE_AUTH_KEY` out of shell history where practical, never commit it,
 
 | File | Purpose |
 |---|---|
-| `install-tailscale.sh` | Idempotent VPS bootstrap with daemon recovery, authentication retries, diagnostics, and SSH output. |
+| `install-tailscale.sh` | Idempotent VPS bootstrap with daemon recovery, authentication retries, diagnostics, SSH output, and login-shell setup. |
 | `diagnose-tailscale.sh` | Read-only daemon, socket, Tailscale, SSH, and log diagnostics. |
 | `.env.example` | Safe placeholder template for local runtime variables. |
 | `.gitignore` | Prevents local secret files, private keys, and runtime logs from being committed. |
