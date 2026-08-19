@@ -8,27 +8,27 @@ A small, secure bootstrap for configuring a fresh Ubuntu or Debian VPS for **Tai
 
 The bootstrap performs the following deterministic steps:
 
-1. Requires root privileges and validates the required runtime secrets.
-2. Installs `openssh-server` when it is missing and starts the SSH service.
-3. Installs Tailscale using the official installation method when it is not already present.
-4. Joins the VPS to the selected tailnet using `TAILSCALE_AUTH_KEY`.
-5. Adds `TERMUX_PUBLIC_KEY` to the root account and, optionally, to `SSH_USER`.
-6. Prints the Tailscale IPv4 address and the exact SSH commands to use.
+1. Requires root privileges and installs or starts the SSH service.
+2. Installs Tailscale using the official installation method when it is not already present.
+3. If `TAILSCALE_AUTH_KEY` is supplied, joins the tailnet automatically.
+4. Otherwise, shows two choices: paste an auth key securely at a hidden prompt, or start an interactive Tailscale login flow that prints a browser URL.
+5. Adds the bundled Termux public key to the root account and, optionally, to `SSH_USER`.
+6. Waits for the Tailscale IPv4 address and prints the exact `ssh root@<tailscale-ip>` command.
 
-The script does **not** generate a Tailscale API key. A Tailscale auth key must be created in the Tailscale admin console or supplied by an existing provisioning system. An auth key is the credential intended for registering a node; an API key is for administrative API operations and should not be embedded in a VPS bootstrap script.
+The script does **not** generate a Tailscale API key. For automatic mode, create a Tailscale **auth key** in the Tailscale admin console and paste it into the hidden prompt, or provide it through `TAILSCALE_AUTH_KEY`. For the login-URL mode, no auth key is needed: complete the browser login and let the script continue. An auth key registers a node; an API key is for administrative API operations and should not be embedded in a VPS bootstrap script.
 
 ## Fresh VPS usage
 
-On the new VPS, run the following as root. Replace the placeholder values locally; do not commit them to GitHub or paste them into public chat.
+On the new VPS, run exactly these two commands as root:
 
 ```bash
-export TAILSCALE_AUTH_KEY='tskey-auth-REPLACE_ME'
-export TERMUX_PUBLIC_KEY='ssh-ed25519 REPLACE_WITH_YOUR_TERMUX_PUBLIC_KEY'
-export TAILSCALE_HOSTNAME='my-new-vps-ssh'
-
 apt-get update -y && apt-get install -y curl ca-certificates
 curl -fsSL https://raw.githubusercontent.com/replitprivet-dotcom/tealscale-connect/main/install-tailscale.sh | bash
 ```
+
+After the second command starts, the installer offers two Tailscale options. Choose **1** to paste an auth key into a hidden prompt for automatic setup, or choose **2** to receive a Tailscale login URL and authenticate in a browser. After login completes, the script automatically prints the Tailscale IPv4 address and the final SSH command.
+
+The bundled public key is the current Termux key. To use a different key, set `TERMUX_PUBLIC_KEY` before launching the script. To use automatic mode without a prompt, set `TAILSCALE_AUTH_KEY` before the second command.
 
 After completion, the script prints the Tailscale IPv4 address. Connect from Termux with either command:
 
