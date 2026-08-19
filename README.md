@@ -11,8 +11,8 @@ The installer is designed for the container-style VPS environment that caused th
 1. Installs the required packages and starts the SSH service.
 2. Installs Tailscale when it is missing.
 3. Detects whether `/dev/net/tun` is available. On container VPSes without it, automatically starts Tailscale in userspace networking mode and prepares a TCP Serve mapping from port `2222` to local SSH port `22`.
-4. Starts `tailscaled` through systemd when available, then through the service manager, and finally as a direct background process when the VPS has no working systemd PID 1.
-5. Waits for the control socket to become usable before calling `tailscale up`.
+4. Starts `tailscaled` directly with userspace networking on container VPSes, avoiding a non-working systemd TUN launch. On normal VPSes it tries systemd and the service manager, then falls back to a direct background process.
+5. Uses bounded socket waits with progress messages before calling `tailscale up`, so a broken daemon cannot leave the installer waiting forever.
 6. Supports two authentication modes. An auth key can be supplied non-interactively or pasted into a hidden prompt; alternatively, the script starts the browser-login flow and displays the URL from Tailscale.
 7. Retries authentication up to three times after daemon or socket failures.
 8. Waits for a Tailscale IPv4 address, adds the Termux public key idempotently, reloads SSH, and prints the exact SSH commands.
@@ -96,7 +96,7 @@ Root access is still configured because the intended command is `ssh root@<tails
 
 ## If a run is interrupted
 
-Press `Ctrl+C` and rerun the same two commands. The script is designed to recover a stale or missing daemon socket automatically. If the VPS has a severe daemon or kernel limitation, the final diagnostics show:
+Press `Ctrl+C` once, then rerun the same two commands. The updated script stops an unready stale daemon, starts the correct userspace mode on container VPSes, and uses bounded waits with visible progress. If the VPS has a severe daemon or kernel limitation, the final diagnostics show:
 
 ```bash
 pgrep -af tailscaled

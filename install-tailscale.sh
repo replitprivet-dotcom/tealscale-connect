@@ -81,10 +81,14 @@ daemon_ready() {
 }
 
 wait_for_daemon() {
+  local max_attempts="${1:-30}"
   local attempt
-  for attempt in $(seq 1 45); do
+  for ((attempt=1; attempt<=max_attempts; attempt++)); do
     if daemon_ready; then
       return 0
+    fi
+    if (( attempt % 5 == 0 )); then
+      log "Still waiting for tailscaled socket (${attempt}/${max_attempts}s)."
     fi
     sleep 1
   done
@@ -103,36 +107,57 @@ start_direct_daemon() {
     >"${TAILSCALE_LOG}" 2>&1 </dev/null &
 }
 
+stop_unready_daemon() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl stop tailscaled 2>/dev/null || true
+  fi
+  if command -v service >/dev/null 2>&1; then
+    service tailscaled stop 2>/dev/null || true
+  fi
+  if pgrep -x tailscaled >/dev/null 2>&1; then
+    pkill -x tailscaled 2>/dev/null || true
+    sleep 2
+  fi
+}
+
 start_tailscaled() {
   if daemon_ready; then
     return 0
   fi
 
   log "Starting tailscaled and waiting for its control socket."
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl enable --now tailscaled 2>/dev/null || true
-  fi
-  if wait_for_daemon; then
-    return 0
-  fi
 
-  if command -v service >/dev/null 2>&1; then
-    service tailscaled start 2>/dev/null || true
-  fi
-  if wait_for_daemon; then
-    return 0
-  fi
+  # Container VPSes usually cannot use the kernel TUN device. Starting the
+  # distro systemd unit first would launch a non-userspace daemon that can
+  # fail silently, so use the known-good userspace command immediately.
+  if [[ "${TAILSCALE_USERSPACE}" -eq 1 ]]; then
+    log "Container mode: starting tailscaled with userspace networking directly."
+    stop_unready_daemon
+    start_direct_daemon
+    if wait_for_daemon 30; then
+      return 0
+    fi
+  else
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl enable --now tailscaled 2>/dev/null || true
+    fi
+    if wait_for_daemon 15; then
+      return 0
+    fi
 
-  # Some VPS containers have no working systemd PID 1. Remove a stale daemon
-  # only after readiness checks fail, then start a controlled direct instance.
-  if pgrep -x tailscaled >/dev/null 2>&1; then
-    log "A tailscaled process exists but its socket is not ready; restarting it."
-    pkill -x tailscaled 2>/dev/null || true
-    sleep 2
-  fi
-  start_direct_daemon
-  if wait_for_daemon; then
-    return 0
+    if command -v service >/dev/null 2>&1; then
+      service tailscaled start 2>/dev/null || true
+    fi
+    if wait_for_daemon 15; then
+      return 0
+    fi
+
+    log "Distro-managed tailscaled is not ready; switching to a direct daemon."
+    stop_unready_daemon
+    start_direct_daemon
+    if wait_for_daemon 30; then
+      return 0
+    fi
   fi
 
   log "tailscaled did not become ready. Recent daemon log:"
