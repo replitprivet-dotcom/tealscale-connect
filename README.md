@@ -10,12 +10,13 @@ The installer is designed for the container-style VPS environment that caused th
 
 1. Installs the required packages and starts the SSH service.
 2. Installs Tailscale when it is missing.
-3. Starts `tailscaled` through systemd when available, then through the service manager, and finally as a direct background process when the VPS has no working systemd PID 1.
-4. Waits for the control socket to become usable before calling `tailscale up`.
-5. Supports two authentication modes. An auth key can be supplied non-interactively or pasted into a hidden prompt; alternatively, the script starts the browser-login flow and displays the URL from Tailscale.
-6. Retries authentication up to three times after daemon or socket failures.
-7. Waits for a Tailscale IPv4 address, adds the Termux public key idempotently, reloads SSH, and prints the exact SSH commands.
-8. On failure, prints the current Tailscale status, daemon process state, and recent daemon log lines without printing the auth key.
+3. Detects whether `/dev/net/tun` is available. On container VPSes without it, automatically starts Tailscale in userspace networking mode and prepares a TCP Serve mapping from port `2222` to local SSH port `22`.
+4. Starts `tailscaled` through systemd when available, then through the service manager, and finally as a direct background process when the VPS has no working systemd PID 1.
+5. Waits for the control socket to become usable before calling `tailscale up`.
+6. Supports two authentication modes. An auth key can be supplied non-interactively or pasted into a hidden prompt; alternatively, the script starts the browser-login flow and displays the URL from Tailscale.
+7. Retries authentication up to three times after daemon or socket failures.
+8. Waits for a Tailscale IPv4 address, adds the Termux public key idempotently, reloads SSH, and prints the exact SSH commands.
+9. On failure, prints the current Tailscale status, daemon process state, and recent daemon log lines without printing the auth key.
 
 Rerunning the installer is safe. Existing Tailscale connections are kept, duplicate authorized-key lines are not added, and the hostname is updated without recreating the node unnecessarily.
 
@@ -37,19 +38,19 @@ After the second command starts, choose one of the displayed options:
 | `1` | Paste a Tailscale auth key into a hidden prompt. Registration is automatic. |
 | `2` | Tailscale prints a browser login URL. Complete login, then the script continues automatically. |
 
-When provisioning finishes, the output includes:
+When provisioning finishes, the output includes the SSH command. On a normal VPS with `/dev/net/tun`, it is:
 
 ```bash
 ssh root@<tailscale-ip>
 ```
 
-It also prints an explicit-key alternative:
+On a container VPS without `/dev/net/tun`, the script automatically configures Tailscale Serve and prints:
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 root@<tailscale-ip>
+ssh -p 2222 root@<tailscale-ip>
 ```
 
-The plain command works when the private key is stored at Termux's default path `~/.ssh/id_ed25519`. The script authorizes the bundled public key, which is the current Termux key used for this setup.
+It also prints an explicit-key alternative for each mode. The plain command works when the private key is stored at Termux's default path `~/.ssh/id_ed25519`. The script authorizes the bundled public key, which is the current Termux key used for this setup.
 
 ## Fully non-interactive mode
 

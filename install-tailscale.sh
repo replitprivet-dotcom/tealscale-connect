@@ -27,6 +27,13 @@ TAILSCALE_AUTH_KEY="${TAILSCALE_AUTH_KEY:-}"
 TAILSCALE_SOCKET="${TAILSCALE_SOCKET:-/var/run/tailscale/tailscaled.sock}"
 TAILSCALE_STATE="${TAILSCALE_STATE:-/var/lib/tailscale/tailscaled.state}"
 TAILSCALE_LOG="${TAILSCALE_LOG:-/var/log/tailscaled.log}"
+TAILSCALE_SSH_PORT="${TAILSCALE_SSH_PORT:-2222}"
+TAILSCALE_USERSPACE=0
+if [[ ! -e /dev/net/tun ]]; then
+  TAILSCALE_USERSPACE=1
+  log "No /dev/net/tun detected; enabling container userspace networking."
+fi
+
 
 if [[ "${TERMUX_PUBLIC_KEY}" != ssh-ed25519\ * && "${TERMUX_PUBLIC_KEY}" != ssh-rsa\ * && "${TERMUX_PUBLIC_KEY}" != ecdsa-sha2-*\ * ]]; then
   die "TERMUX_PUBLIC_KEY does not look like an SSH public key."
@@ -81,9 +88,13 @@ wait_for_daemon() {
 
 start_direct_daemon() {
   install -d -m 755 "$(dirname "${TAILSCALE_STATE}")" "$(dirname "${TAILSCALE_SOCKET}")"
-  nohup tailscaled \
-    --state="${TAILSCALE_STATE}" \
-    --socket="${TAILSCALE_SOCKET}" \
+  local daemon_args=(--state="${TAILSCALE_STATE}" --socket="${TAILSCALE_SOCKET}")
+  if [[ "${TAILSCALE_USERSPACE}" -eq 1 ]]; then
+    daemon_args+=(--tun=userspace-networking
+      --socks5-server=localhost:1055
+      --outbound-http-proxy-listen=localhost:1055)
+  fi
+  nohup tailscaled "${daemon_args[@]}" \
     >"${TAILSCALE_LOG}" 2>&1 </dev/null &
 }
 
@@ -228,6 +239,23 @@ if [[ -z "${TAILSCALE_IP}" ]]; then
   die "Complete the browser login, then rerun this same command."
 fi
 
+configure_userspace_ssh() {
+  [[ "${TAILSCALE_USERSPACE}" -eq 1 ]] || return 0
+  log "Configuring Tailscale Serve TCP ${TAILSCALE_SSH_PORT} -> local SSH port 22."
+  local attempt
+  for attempt in 1 2 3; do
+    if tailscale_cli serve --bg --tcp "${TAILSCALE_SSH_PORT}" 22; then
+      return 0
+    fi
+    log "Tailscale Serve setup failed; retrying (${attempt}/3)."
+    sleep 2
+  done
+  tailscale_cli serve status 2>&1 || true
+  die "Could not expose SSH through Tailscale Serve on port ${TAILSCALE_SSH_PORT}."
+}
+
+configure_userspace_ssh
+
 add_authorized_key() {
   local account="$1"
   local home_dir uid gid auth_file
@@ -266,6 +294,12 @@ printf '\nSetup complete.\n'
 printf 'Tailscale hostname: %s\n' "${TAILSCALE_HOSTNAME}"
 printf 'Tailscale IPv4: %s\n' "${TAILSCALE_IP}"
 printf '\nConnect from Termux:\n'
-printf '  ssh root@%s\n' "${TAILSCALE_IP}"
-printf '\nIf you want to select the key explicitly:\n'
-printf '  ssh -i ~/.ssh/id_ed25519 root@%s\n' "${TAILSCALE_IP}"
+if [[ "${TAILSCALE_USERSPACE}" -eq 1 ]]; then
+  printf '  ssh -p %s root@%s\n' "${TAILSCALE_SSH_PORT}" "${TAILSCALE_IP}"
+  printf '\nIf you want to select the key explicitly:\n'
+  printf '  ssh -p %s -i ~/.ssh/id_ed25519 root@%s\n' "${TAILSCALE_SSH_PORT}" "${TAILSCALE_IP}"
+else
+  printf '  ssh root@%s\n' "${TAILSCALE_IP}"
+  printf '\nIf you want to select the key explicitly:\n'
+  printf '  ssh -i ~/.ssh/id_ed25519 root@%s\n' "${TAILSCALE_IP}"
+fi
